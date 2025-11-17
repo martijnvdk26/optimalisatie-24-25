@@ -33,14 +33,13 @@ public:
     ~ThreadPool()
     {
         stop = true; // stop all threads
-
-        for (auto& thread : workers)
-            thread.join();
+		condition.notify_all();
+        for (auto& thread : workers) { thread.join(); }
     }
 
 
     template <class T>
-    [[nodiscard]] auto enqueue(T task) -> std::future<decltype(task())>
+    [[nodiscard]] auto Enqueue(T task) -> std::future<decltype(task())>
     {
         //Wrap the function in a packaged_task so we can return a future object
         auto wrapper = std::make_shared<std::packaged_task<decltype(task())()>>(std::move(task));
@@ -48,11 +47,10 @@ public:
         //Scope to restrict critical section
         {
             //lock our queue and add the given task to it
-            std::unique_lock<std::mutex> lock(queue_mutex);
-
+            std::unique_lock<std::mutex> lock(queueMutex);
             tasks.push_back([=] {(*wrapper)(); });
         }
-
+		condition.notify_one();
         return wrapper->get_future();
     }
 
@@ -61,9 +59,8 @@ private:
 
     std::vector<std::thread> workers;
     std::deque<std::function<void()>> tasks;
-
-
-    std::mutex queue_mutex; //Lock for our queue
+	std::condition_variable condition;
+    std::mutex queueMutex; //Lock for our queue
     bool stop = false;
 };
 
@@ -76,11 +73,9 @@ inline void Worker::operator()()
         //This is important because we don't want to hold the lock while executing the task,
         //because that would make it so only one task can be run simultaneously (aka sequantial)
         {
-            std::unique_lock<std::mutex> locker(pool.queue_mutex);
-
-
+            std::unique_lock<std::mutex> locker(pool.queueMutex);
+            pool.condition.wait(locker, [=] { return pool.stop || !pool.tasks.empty();});
             if (pool.stop) break;
-
             task = pool.tasks.front();
             pool.tasks.pop_front();
         }
